@@ -19,7 +19,7 @@
 // - you would like to slim the executable by eliminating unnecessary code for benchmarks where exe size matters or
 // - you would like to experiment with the model-mixture
 // TODO: make more models "optional"
-#define USE_ZLIB
+//#define USE_ZLIB
 #define USE_WAVMODEL
 #define USE_TEXTMODEL //if you uncomment this line, you must uncomment the next line (USE_WORDMODEL) as well
 #define USE_WORDMODEL
@@ -105,6 +105,15 @@
 #define strcasecmp _stricmp
 #endif
 
+// changes for compiling with visual studio
+wchar_t *convertCharArrayToLPCWSTR(const char* charArray)
+{
+	wchar_t* wString = new wchar_t[4096];
+	MultiByteToWideChar(CP_ACP, 0, charArray, -1, wString, 4096);
+	return wString;
+}
+
+#pragma warning(disable:4996)
 
 ///////////////////////// SIMD Vectorization detection //////////////////////////////////
 
@@ -549,7 +558,7 @@ static int makedir(const char* dir) {
   if(examinepath(dir)==2)//existing directory
     return 2; //2: directory already exists, no need to create
   #ifdef WINDOWS
-    bool created = (CreateDirectory(dir, 0) == TRUE);
+    bool created = (CreateDirectory(convertCharArrayToLPCWSTR(dir), 0) == TRUE);
   #else
   #ifdef UNIX
     bool created = (mkdir(dir, 0777) == 0);
@@ -601,7 +610,7 @@ static void makedirectories(const char* filename) {
 FILE* maketmpfile(void) {
 #if defined(WINDOWS)
   char szTempFileName[MAX_PATH];
-  UINT uRetVal = GetTempFileName(TEXT("."), TEXT("tmp"), 0, szTempFileName);
+  UINT uRetVal = GetTempFileName(TEXT("."), TEXT("tmp"), 0, convertCharArrayToLPCWSTR(szTempFileName));
   if(uRetVal==0)return 0;
   return fopen(szTempFileName, "w+bTD");
 #else
@@ -819,7 +828,7 @@ public:
   #ifdef WINDOWS
     int i;
     Array<char> myfilename(MAX_PATH+1);
-    if((i=GetModuleFileName(NULL, &myfilename[0], MAX_PATH)) && i<=MAX_PATH)
+    if((i=GetModuleFileName(NULL, convertCharArrayToLPCWSTR(&myfilename[0]), MAX_PATH)) && i<=MAX_PATH)
   #endif
   #ifdef UNIX
     Array<char> myfilename(PATH_MAX+1);
@@ -836,7 +845,7 @@ public:
     #ifdef WINDOWS
       int i;
       Array<char> myfilename(MAX_PATH+flength);
-      if((i=GetModuleFileName(NULL, &myfilename[0], MAX_PATH)) && i<=MAX_PATH) {
+      if((i=GetModuleFileName(NULL, convertCharArrayToLPCWSTR(&myfilename[0]), MAX_PATH)) && i<=MAX_PATH) {
         char *endofpath=strrchr(&myfilename[0], '\\');
     #endif
     #ifdef UNIX
@@ -4880,6 +4889,19 @@ private:
     NumHashes = 3,      // number of hashes used
   };
   struct sparseConfig {
+	  sparseConfig(U32 offset1, U32 stride1, U32 deletions1, U32 minLen1, U32 bitMask1) {
+		  offset = offset1;
+		  stride = stride1;
+		  deletions = deletions1;
+		  minLen = minLen1;
+		  bitMask = bitMask1;
+	  }
+	  sparseConfig(U32 offset1, U32 stride1, U32 deletions1, U32 minLen1) {
+		  offset = offset1;
+		  stride = stride1;
+		  deletions = deletions1;
+		  minLen = minLen1;
+	  }
     U32 offset    = 0;      // number of last input bytes to ignore when searching for a match
     U32 stride    = 1;      // look for a match only every stride bytes after the offset
     U32 deletions = 0;      // when a match is found, ignore these many initial post-match bytes, to model deletions
