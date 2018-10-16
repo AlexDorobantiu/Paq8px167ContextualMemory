@@ -8,7 +8,7 @@
 //////////////////////// Versioning ////////////////////////////////////////
 
 #define PROGNAME     "paq8px"
-#define PROGVERSION  "167"  //update version here before publishing your changes
+#define PROGVERSION  "167cm"  //update version here before publishing your changes
 #define PROGYEAR     "2018"
 
 
@@ -6066,6 +6066,626 @@ void im24bitModel(Mixer& m, int info, ModelStats *Stats = nullptr, int alpha=0, 
   }
 }
 
+//////////////////////////// contextual memory  //////////////////////////
+
+const int FNV_offset_basis = 2166136261;
+const int FNV_prime = 16777619;
+
+class LogisticHelper
+{
+public:
+	const int stretchTableNumberOfCuantizationValues = 16535;
+	const int squashTableNumberOfCuantizationValues = 16535;
+
+	const float squashAbsoluteMaximumValue = 10.0f;
+	const float probabilityMaxValue = 0.99999f;
+	const float probabilityMinValue = 0.00001f;
+	const float squashFactor = squashTableNumberOfCuantizationValues / (2 * squashAbsoluteMaximumValue);
+	float* stretchedProbabilitiesTable;
+	float* squashedProbabilitiesTable;
+
+	LogisticHelper()
+	{
+		stretchedProbabilitiesTable = new float[stretchTableNumberOfCuantizationValues + 1];
+		squashedProbabilitiesTable = new float[squashTableNumberOfCuantizationValues + 1];
+
+		stretchedProbabilitiesTable[stretchTableNumberOfCuantizationValues] = squashAbsoluteMaximumValue;
+		for (int i = 0; i < stretchTableNumberOfCuantizationValues; i++)
+		{
+			float stretchedProbability = slowStretch((i + 0.5f) / stretchTableNumberOfCuantizationValues);
+			if (stretchedProbability > squashAbsoluteMaximumValue)
+			{
+				stretchedProbability = squashAbsoluteMaximumValue;
+			}
+			else
+			{
+				if (stretchedProbability < -squashAbsoluteMaximumValue)
+				{
+					stretchedProbability = -squashAbsoluteMaximumValue;
+				}
+			}
+			stretchedProbabilitiesTable[i] = stretchedProbability;
+		}
+		squashedProbabilitiesTable[squashTableNumberOfCuantizationValues] = probabilityMaxValue;
+		for (int i = 0; i < squashTableNumberOfCuantizationValues; i++)
+		{
+			float probability = slowSquash(2 * squashAbsoluteMaximumValue * ((i + 0.5f) / squashTableNumberOfCuantizationValues) - squashAbsoluteMaximumValue);
+			if (probability > probabilityMaxValue)
+			{
+				probability = probabilityMaxValue;
+			}
+			else
+			{
+				if (probability < probabilityMinValue)
+				{
+					probability = probabilityMinValue;
+				}
+			}
+			squashedProbabilitiesTable[i] = probability;
+		}
+	}
+
+	float stretch(float p)
+	{
+		return stretchedProbabilitiesTable[(int)(p * stretchTableNumberOfCuantizationValues)];
+	}
+
+	float squash(float p)
+	{
+		int index = (int)((p + squashAbsoluteMaximumValue) * squashFactor);
+		if (index > squashTableNumberOfCuantizationValues)
+		{
+			index = squashTableNumberOfCuantizationValues;
+		}
+		else
+		{
+			if (index < 0)
+			{
+				index = 0;
+			}
+		}
+		return squashedProbabilitiesTable[index];
+	}
+
+	static float slowStretch(float p)
+	{
+		return (float)log(p / (1 - p));
+	}
+
+	static float slowSquash(float p)
+	{
+		return (float)(1 / (1 + exp(-p)));
+	}
+} logisticHelper;
+
+static int hash2Numbers(int a, int b)
+{
+	int h = a * 200002979 + b * 30005491;
+	return (h ^ h >> 9 ^ a >> 2 ^ b >> 3);
+}
+
+static void fnvOneAtATimeHash(U8* key, int len, int* output)
+{
+	int hash = FNV_offset_basis;
+	for (int i = 0; i < len; i++)
+	{
+		hash ^= key[i];
+		hash *= FNV_prime;
+		output[i] = hash;
+	}
+}
+
+static void fnvOneAtATimeWithMaskHash(U8* key, U8 mask, int len, int* output)
+{
+	int hash = FNV_offset_basis;
+	for (int i = 0; i < len; i++)
+	{
+		hash ^= (key[i] & mask);
+		hash *= FNV_prime;
+		output[i] = hash;
+	}
+}
+
+struct PixelDelta
+{
+	int deltaX;
+	int deltaY;
+
+	const bool operator==(PixelDelta other) const {
+		return deltaX == other.deltaX && deltaY == other.deltaY;
+	}
+
+	const bool operator!=(PixelDelta other) const {
+		return deltaX != other.deltaX || deltaY != other.deltaY;
+	}
+};
+
+static void rotate2dPointAroundOrigin(double &x, double &y, double angle)
+{
+	double tempX = x;
+	double tempY = y;
+	double cos = std::cos(angle);
+	double sin = std::sin(angle);
+	x = cos * tempX - sin * tempY;
+	y = sin * tempX + cos * tempY;
+}
+
+static Array<PixelDelta>* duplicateList(Array<PixelDelta>* currentList)
+{
+	Array<PixelDelta>* newList = new Array<PixelDelta>(0);
+	for (int i = 0; i < currentList->size(); i++)
+	{
+		newList->push_back((*currentList)[i]);
+	}
+	return newList;
+}
+
+template <class T> T* listToArray(Array<T>* currentList)
+{
+	T* result = new T[currentList->size()];
+	for (int i = 0; i < currentList->size(); i++)
+	{
+		result[i] = (*currentList)[i];
+	}
+	return result;
+}
+
+static bool listContainsElement(Array<PixelDelta>* currentList, PixelDelta value)
+{
+	for (int i = 0; i < currentList->size(); i++)
+	{
+		if ((*currentList)[i] == value) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool listNotContained(Array<PixelDelta>* currentList, Array<Array<PixelDelta>*>* allLists)
+{
+	for (int i = 0; i < allLists->size(); i++)
+	{
+		Array<PixelDelta>* testList = (*allLists)[i];
+
+		if (testList->size() == currentList->size()) {
+			for (int j = 0; j < testList->size(); j++) {
+				bool listsEqual = true;
+				if ((*currentList)[j] != (*testList)[j]) {
+					listsEqual = false;
+					break;
+				}
+				if (listsEqual) {
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+struct BiasContextMapShortTableEntry
+{
+	short value;
+	U8 match;
+};
+
+class BiasContextMapShort
+{
+	int numberOfBucketsBits;
+	int numberOfBuckets;
+	int numberOfBucketsMask;
+	int bucketSize;
+	BiasContextMapShortTableEntry** valuesTable;
+
+	U8 match;
+	int bucketIndex;
+	int indexInBucket;
+
+public:
+	BiasContextMapShort(int numberOfBucketsBits, int bucketSize)
+	{
+		this->numberOfBucketsBits = numberOfBucketsBits;
+		this->bucketSize = bucketSize;
+
+		numberOfBuckets = 1 << numberOfBucketsBits;
+		numberOfBucketsMask = numberOfBuckets - 1;
+
+		valuesTable = new BiasContextMapShortTableEntry*[numberOfBuckets];
+		for (int i = 0; i < numberOfBuckets; i++) {
+			valuesTable[i] = new BiasContextMapShortTableEntry[bucketSize];
+			for (int j = 0; j < bucketSize; j++) {
+				valuesTable[i][j].match = 0;
+				valuesTable[i][j].value = 0;
+			}
+		}
+	}
+
+	short* getContextValue(int context)
+	{
+		bucketIndex = context & numberOfBucketsMask;
+		match = (U8)(context >> numberOfBucketsBits);
+		for (int i = 0; i < bucketSize; i++)
+		{
+			if (valuesTable[bucketIndex][i].match == match)
+			{
+				indexInBucket = i;
+				return &(valuesTable[bucketIndex][i].value);
+			}
+		}
+		indexInBucket = -1;
+		return NULL;
+	}
+
+	void updateLastContextValue(short newValue)
+	{
+		if (indexInBucket < 0)
+		{
+			short min = 32767;
+			for (int i = 0; i < bucketSize; i++)
+			{
+				short currentValue = valuesTable[bucketIndex][i].value;
+				currentValue ^= (short)(currentValue >> 15);
+				if (currentValue < min)
+				{
+					min = currentValue;
+					indexInBucket = i;
+				}
+			}
+			valuesTable[bucketIndex][indexInBucket].match = match;
+		}
+		valuesTable[bucketIndex][indexInBucket].value = newValue;
+	}
+};
+
+class ContextualMemory
+{
+private:
+	const int floatPartBits = 10;
+	const int floatUnit = 1 << floatPartBits;
+
+	float memoryTableValueSquashFactor;
+	float outputProbabilitySquashFactor;
+
+	int numberOfInputContexts;
+	int* inputContexts;
+	int memorySizeBits;
+	int memoryBucketSizeBits;
+
+	BiasContextMapShort** memoryTable;
+	short* memoryTableValue;
+
+	float globalErrorWeight;
+	float localErrorWeight;
+
+	float outputProbability;
+
+	float** updateSquashTableLookup;
+
+public:
+	ContextualMemory(int numberOfInputContexts, int memorySizeBits, int memoryBucketSizeBits, float globalErrorWeight, float localErrorWeight,
+		float outputSquashFactor, float valueSquashFactor)
+	{
+		this->numberOfInputContexts = numberOfInputContexts;
+		this->memorySizeBits = memorySizeBits;
+		this->memoryBucketSizeBits = memoryBucketSizeBits;
+		this->globalErrorWeight = globalErrorWeight;
+		this->localErrorWeight = localErrorWeight;
+
+		outputProbabilitySquashFactor = outputSquashFactor / floatUnit;
+		memoryTableValueSquashFactor = valueSquashFactor / floatUnit;
+
+		memoryTable = new BiasContextMapShort*[numberOfInputContexts];
+		for (int i = 0; i < numberOfInputContexts; i++)
+		{
+			memoryTable[i] = new BiasContextMapShort(memorySizeBits - memoryBucketSizeBits, 1 << memoryBucketSizeBits);
+		}
+
+		memoryTableValue = new short[numberOfInputContexts];
+
+		updateSquashTableLookup = new float*[2];
+		updateSquashTableLookup[0] = new float[65536];
+		updateSquashTableLookup[1] = new float[65536];
+		for (int i = -32768; i < 32768; i++)
+		{
+			updateSquashTableLookup[0][i + 32768] = (logisticHelper.slowSquash(i * memoryTableValueSquashFactor) * localErrorWeight);
+			updateSquashTableLookup[1][i + 32768] = ((logisticHelper.slowSquash(i * memoryTableValueSquashFactor) - 1) * localErrorWeight);
+		}
+	}
+
+	void setInputContexts(int* inputContexts)
+	{
+		this->inputContexts = inputContexts;
+	}
+
+	void computeOutputProbability()
+	{
+		int confidence = 0;
+		int numberOfMatches = 0;
+		for (int i = 0; i < numberOfInputContexts; i++)
+		{
+			short* contextValue = memoryTable[i]->getContextValue(inputContexts[i]);
+			if (contextValue != NULL)
+			{
+				memoryTableValue[i] = *contextValue;
+				confidence += memoryTableValue[i];
+				numberOfMatches++;
+			}
+			else
+			{
+				memoryTableValue[i] = 0;
+			}
+		}
+		float squashValue = confidence * outputProbabilitySquashFactor / ((numberOfInputContexts + numberOfMatches + 1) >> 1);
+		outputProbability = logisticHelper.squash(squashValue);
+	}
+
+	float getOutputProbability()
+	{
+		return outputProbability;
+	}
+
+	void update(float feedbackProbability, int binaryOutcome)
+	{
+		float error = (feedbackProbability - binaryOutcome) * globalErrorWeight;
+		for (int i = 0; i < numberOfInputContexts; i++)
+		{
+			int tableValue = memoryTableValue[i];
+			float weightError = error + updateSquashTableLookup[binaryOutcome][tableValue + 32768];
+			tableValue = tableValue - (int)(floatUnit * weightError + 0.5f);
+			if (tableValue > 32767)
+			{
+				tableValue = 32767;
+			}
+			else
+			{
+				if (tableValue < -32768)
+				{
+					tableValue = -32768;
+				}
+			}
+			memoryTable[i]->updateLastContextValue((short)tableValue);
+		}
+	}
+};
+
+class ContextualMemoryForFiles
+{
+	ContextualMemory* contextualMemory;
+
+	int numberOfInputContexts;
+	int* inputContexts;
+	int* memoryTableIndex;
+	int* memoryTableHash;
+
+	float outputProbability;
+public:
+
+	ContextualMemoryForFiles(int numberOfInputContexts, int memorySizeBits, int memoryBucketSizeBits,
+		float globalErrorWeight, float localErrorWeight, float outputSquashFactor, float valueSquashFactor)
+	{
+		this->numberOfInputContexts = numberOfInputContexts;
+		contextualMemory = new ContextualMemory(numberOfInputContexts, memorySizeBits, memoryBucketSizeBits, globalErrorWeight, localErrorWeight, outputSquashFactor, valueSquashFactor);
+		memoryTableIndex = new int[numberOfInputContexts];
+		memoryTableHash = new int[numberOfInputContexts];
+
+		contextualMemory->setInputContexts(memoryTableIndex);
+	}
+
+	void setInputContexts(int* inputContexts)
+	{
+		this->inputContexts = inputContexts;
+	}
+
+	void computeOutputProbability()
+	{
+		if (bpos == 0)
+		{
+			for (int i = 0; i < numberOfInputContexts; i++)
+			{
+				memoryTableHash[i] = inputContexts[i];
+				memoryTableIndex[i] = memoryTableHash[i];
+			}
+		}
+		else
+		{
+			if (bpos == 4)
+			{
+				for (int i = 0; i < numberOfInputContexts; i++)
+				{
+					memoryTableHash[i] = hash2Numbers(c0, inputContexts[i]);
+					memoryTableIndex[i] = memoryTableHash[i];
+				}
+			}
+			else
+			{
+				for (int i = 0; i < numberOfInputContexts; i++)
+				{
+					memoryTableIndex[i] = memoryTableHash[i] ^ c0;
+				}
+			}
+		}
+
+		contextualMemory->computeOutputProbability();
+		outputProbability = contextualMemory->getOutputProbability();
+	}
+
+	float getOutputProbability()
+	{
+		return outputProbability;
+	}
+
+	void update(float feedbackProbability, int binaryOutcome)
+	{
+		contextualMemory->update(feedbackProbability, binaryOutcome);
+	}
+};
+
+class ContextualMemoryImg8Bit {
+private:
+	RingBuffer* buffer;
+	int longestRayLength;
+	int numberOfRays;
+	PixelDelta** pixelDeltasForRay;
+	int** contextLenghtsForRay;
+
+	int* pixelDeltasForRayLength;
+	int* contextLenghtsForRayLength;
+
+	int numberOfContexts;
+	U8* pixelValues;
+	U8* derivativeValues;
+	int** rayContextHashes;
+
+	int* contextHashes;
+
+	ContextualMemoryForFiles* contextualMemory;
+
+	float feedbackProbability = 0.5;
+	float outputProbability = 0.5;
+
+	const float confidenceSquashFactor = 0.4;
+	const float tableValueSquashFactor = 0.4;
+	const float globalErrorWeight = 0.7;
+	const float localErrorWeight = 0.1;
+
+public:
+	ContextualMemoryImg8Bit(RingBuffer* buffer, int longestRayLength = 5, int numberOfRays = 4, int tableLengthBits = 21) {
+		this->buffer = buffer;
+		this->longestRayLength = longestRayLength;
+		this->numberOfRays = numberOfRays;
+
+		initializeContexts();
+		numberOfContexts = numberOfContexts * 4; // pixels and 3 quantized derivatives
+
+		pixelValues = new byte[longestRayLength];
+		derivativeValues = new byte[longestRayLength];
+		rayContextHashes = new int*[4];
+		for (int i = 0; i < 4; i++)
+		{
+			rayContextHashes[i] = new int[longestRayLength];
+		}
+		contextHashes = new int[numberOfContexts];
+
+		contextualMemory = new ContextualMemoryForFiles(numberOfContexts, tableLengthBits - 2, 2, globalErrorWeight, localErrorWeight, confidenceSquashFactor, tableValueSquashFactor);
+		contextualMemory->setInputContexts(contextHashes);
+	}
+
+	void initializeContexts()
+	{
+		pixelDeltasForRay = new PixelDelta*[numberOfRays];
+		contextLenghtsForRay = new int*[numberOfRays];
+		pixelDeltasForRayLength = new int[numberOfRays];
+		contextLenghtsForRayLength = new int[numberOfRays];
+
+		PixelDelta pixelDelta;
+		// current pixel context
+		Array<PixelDelta>* relativePixelsList;
+		// to avoid duplicates
+		Array<Array<PixelDelta>*>* relativePixelsLists = new Array<Array<PixelDelta>*>(0);
+
+		// pixel rays around current pixel
+		double* angles = new double[numberOfRays];
+		const double pi = 3.141592;
+		double baseAngle = pi;
+		double angleIncrement = (pi / 4 - pi) / (numberOfRays - 1);
+		for (int i = 0; i < numberOfRays; i++)
+		{
+			angles[i] = baseAngle;
+			baseAngle += angleIncrement;
+		}
+
+		numberOfContexts = 0;
+		for (int rayIndex = 0; rayIndex < numberOfRays; rayIndex++)
+		{
+			Array<int>* contextLenghts = new Array<int>(0);
+			relativePixelsList = new Array<PixelDelta>(0);
+			for (int l = 1; l <= longestRayLength; l++)
+			{
+				double x = l;
+				double y = 0;
+				rotate2dPointAroundOrigin(x, y, angles[rayIndex]);
+				pixelDelta.deltaX = (int)std::round(x);
+				pixelDelta.deltaY = -(int)std::round(y);
+				if (!listContainsElement(relativePixelsList, pixelDelta))
+				{
+					relativePixelsList->push_back(pixelDelta);
+				}
+
+				Array<PixelDelta>* duplicateCheckList = duplicateList(relativePixelsList);
+
+				// avoid duplicate contexts
+				if (listNotContained(duplicateCheckList, relativePixelsLists))
+				{
+					int numberOfElements = duplicateCheckList->size();
+					contextLenghts->push_back(numberOfElements - 1);
+					relativePixelsLists->push_back(duplicateCheckList);
+					numberOfContexts++;
+				}
+			}
+			pixelDeltasForRay[rayIndex] = listToArray(relativePixelsList);
+			contextLenghtsForRay[rayIndex] = listToArray(contextLenghts);
+
+			pixelDeltasForRayLength[rayIndex] = relativePixelsList->size();
+			contextLenghtsForRayLength[rayIndex] = contextLenghts->size();
+		}
+	}
+
+	U8 getPixelRelativeToCurrent(int deltaX, int deltaY, int imageWidth, int currentXPosition) {
+		if ((currentXPosition + deltaX < 0) || (currentXPosition + deltaX >= imageWidth)) {
+			return 0;
+		}
+		int index = imageWidth * -deltaY - deltaX;
+		return (*buffer)(index);
+	}
+
+	float predict(int imageWidth, int currentXPosition) {
+		if (bpos == 0)
+		{
+			int contextIndex = 0;
+			for (int ray = 0; ray < numberOfRays; ray++)
+			{
+				int relativePixelInformationLength = pixelDeltasForRayLength[ray];
+				PixelDelta* relativePixelInformation = pixelDeltasForRay[ray];
+				for (int i = 0; i < relativePixelInformationLength; i++)
+				{
+					pixelValues[i] = getPixelRelativeToCurrent(relativePixelInformation[i].deltaX, relativePixelInformation[i].deltaY, imageWidth, currentXPosition);
+				}
+				for (int i = relativePixelInformationLength - 1; i > 0; i--)
+				{
+					derivativeValues[i] = (U8)(pixelValues[i] - pixelValues[i - 1]);
+				}
+				derivativeValues[0] = pixelValues[0];
+
+				fnvOneAtATimeHash(pixelValues, relativePixelInformationLength, rayContextHashes[0]);
+				fnvOneAtATimeWithMaskHash(derivativeValues, 254, relativePixelInformationLength, rayContextHashes[1]);
+				fnvOneAtATimeWithMaskHash(derivativeValues, 252, relativePixelInformationLength, rayContextHashes[2]);
+				fnvOneAtATimeWithMaskHash(derivativeValues, 248, relativePixelInformationLength, rayContextHashes[3]);
+
+				for (int i = 0; i < contextLenghtsForRayLength[ray]; i++)
+				{
+					int contextLength = contextLenghtsForRay[ray][i];
+					contextHashes[contextIndex++] = rayContextHashes[0][contextLength];
+					contextHashes[contextIndex++] = rayContextHashes[1][contextLength];
+					contextHashes[contextIndex++] = rayContextHashes[2][contextLength];
+					contextHashes[contextIndex++] = rayContextHashes[3][contextLength];
+				}
+			}
+		}
+
+		contextualMemory->computeOutputProbability();
+		feedbackProbability = contextualMemory->getOutputProbability();
+		outputProbability = feedbackProbability;
+		int quantizedProbability = outputProbability * 4094 + 1 + 0.5;
+		int returnValue = stretch(quantizedProbability);
+		return returnValue;
+	}
+
+	void update(int bit) {
+		contextualMemory->update(feedbackProbability, bit);
+	}
+
+};
+
 //////////////////////////// im8bitModel /////////////////////////////////
 
 // Model for 8-bit image data
@@ -6086,6 +6706,8 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
                                      {11,1}, {11,1}, {11,1}, {11,1}, {11,1}, {11,1}};
   static SmallStationaryContextMap pltMap[nPltMaps] = { {11,1},{11,1},{11,1},{11,1} };
   static IndirectContext<U8> iCtx[nPltMaps] = { 16, 16, 16, 16 };
+  static ContextualMemoryImg8Bit* contextualMemoryImg8Bit;
+  static int contextualMemoryPrediction = 0;
   static RingBuffer buffer(0x100000); // internal rotating buffer for (PNG unfiltered) pixel data
   static Array<short> jumps(0x8000);
   //pixel neighborhood
@@ -6405,6 +7027,15 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
     for (int j=0; i<nMaps; i++, j++)
       Map[i].set((pOLS[j]-px-B)*8+bpos);
   }
+
+  if (contextualMemoryImg8Bit == NULL) {
+	  contextualMemoryImg8Bit = new ContextualMemoryImg8Bit(&buffer, 6, 4, 20);
+  }
+  else {
+	  contextualMemoryImg8Bit->update(y);
+  }
+  contextualMemoryPrediction = contextualMemoryImg8Bit->predict(w, x);
+  m.add(contextualMemoryPrediction);
 
   // Predict next bit
   if (x || !isPNG){
