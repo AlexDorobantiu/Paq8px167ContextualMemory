@@ -11,6 +11,15 @@
 #define PROGVERSION  "167cm"  //update version here before publishing your changes
 #define PROGYEAR     "2018"
 
+#define USE_CONTEXTUAL_MEMORY
+#define LOG_PREDICTION_LOSS
+
+#if defined(USE_CONTEXTUAL_MEMORY)
+#define LOG_PREDICTION_FILENAME  "outputLossCM.log"
+#else
+#define LOG_PREDICTION_FILENAME  "outputLoss.log"
+#endif
+
 
 //////////////////////// Build options /////////////////////////////////////
 
@@ -6066,6 +6075,7 @@ void im24bitModel(Mixer& m, int info, ModelStats *Stats = nullptr, int alpha=0, 
   }
 }
 
+#ifdef USE_CONTEXTUAL_MEMORY
 //////////////////////////// contextual memory  //////////////////////////
 
 const int FNV_offset_basis = 2166136261;
@@ -6336,6 +6346,7 @@ public:
 		valuesTable[bucketIndex][indexInBucket].value = newValue;
 	}
 };
+
 
 class ContextualMemory
 {
@@ -6686,6 +6697,8 @@ public:
 
 };
 
+#endif
+
 //////////////////////////// im8bitModel /////////////////////////////////
 
 // Model for 8-bit image data
@@ -6706,8 +6719,7 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
                                      {11,1}, {11,1}, {11,1}, {11,1}, {11,1}, {11,1}};
   static SmallStationaryContextMap pltMap[nPltMaps] = { {11,1},{11,1},{11,1},{11,1} };
   static IndirectContext<U8> iCtx[nPltMaps] = { 16, 16, 16, 16 };
-  static ContextualMemoryImg8Bit* contextualMemoryImg8Bit;
-  static int contextualMemoryPrediction = 0;
+
   static RingBuffer buffer(0x100000); // internal rotating buffer for (PNG unfiltered) pixel data
   static Array<short> jumps(0x8000);
   //pixel neighborhood
@@ -6738,6 +6750,13 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
   static const U8 *ols_ctx4[10] = { &N, &NE, &NEE, &NEEE, &NN, &NNE, &NNEE, &NNN, &NNNE, &NNNN };
   static const U8 *ols_ctx5[14] = { &WWWW, &WWW, &WW, &W, &NWWW, &NWW, &NW, &N, &NNWW, &NNW, &NN, &NNNW, &NNN, &NNNN };
   static const U8 **ols_ctxs[nOLS] = { &ols_ctx1[0], &ols_ctx2[0], &ols_ctx3[0], &ols_ctx4[0], &ols_ctx5[0] };
+
+
+#ifdef USE_CONTEXTUAL_MEMORY
+	static ContextualMemoryImg8Bit* contextualMemoryImg8Bit;
+	static int contextualMemoryPrediction = 0;
+#endif
+
   // Select nearby pixels as context
   if (bpos==0) {
     if (pos!=lastPos+1){
@@ -6906,7 +6925,8 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
       MapCtxs[j++] = ((W+N)*3-NW*2)/4;
       for (j=0; j<nOLS; j++) {
         ols[j].Update(W);
-        pOLS[j] = Clip(floor(ols[j].Predict(ols_ctxs[j])));
+		double olsPrediction = ols[j].Predict(ols_ctxs[j]);
+        pOLS[j] = Clip(floor(olsPrediction));
       }
       for (j=0; j<nPltMaps; j++)
         iCtx[j]+=W;
@@ -7028,6 +7048,7 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
       Map[i].set((pOLS[j]-px-B)*8+bpos);
   }
 
+#ifdef USE_CONTEXTUAL_MEMORY
   if (contextualMemoryImg8Bit == NULL) {
 	  contextualMemoryImg8Bit = new ContextualMemoryImg8Bit(&buffer, 6, 4, 20);
   }
@@ -7036,6 +7057,7 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
   }
   contextualMemoryPrediction = contextualMemoryImg8Bit->predict(w, x);
   m.add(contextualMemoryPrediction);
+#endif
 
   // Predict next bit
   if (x || !isPNG){
@@ -9814,9 +9836,10 @@ class ContextModel{
   SparseMatchModel sparseMatchModel;
   Mixer *m;
   Blocktype next_blocktype, blocktype;
-  int blocksize, blockinfo, bytesread;
+  int blocksize, bytesread;
   bool readsize;
 public:
+  int blockinfo;
   bool Bypass;
   ContextModel() :
     normalmodel(MEM*32),
@@ -9986,11 +10009,49 @@ class Predictor {
     APM1 APM1s[7];
   } Generic;
   ModelStats stats;
+  
+#ifdef LOG_PREDICTION_LOSS
+  // probability logging
+  double totalLoss;
+  FileDisk* logProbabilityFile = NULL;
+#endif
+
 public:
   Predictor();
+
+#ifdef LOG_PREDICTION_LOSS
+  void logProbability(int pr, int groundTruth, int imageWidth);
+#endif
+
   int p() const {return pr;}
   void update();
 };
+
+#ifdef LOG_PREDICTION_LOSS
+void Predictor::logProbability(int pr, int groundTruth, int imageWidth) {
+	if (logProbabilityFile == NULL) {
+		logProbabilityFile = new FileDisk();
+		logProbabilityFile->create(LOG_PREDICTION_FILENAME);
+		logProbabilityFile->blockwrite((U8 *)&imageWidth, sizeof(int));
+		totalLoss = 0;
+	}
+	double probability = (pr + 1) / 4097.0;
+	double loss;
+	if (groundTruth == 0)
+	{
+		loss = -log2(1 - probability);
+	}
+	else {
+		loss = -log2(probability);
+	}
+	totalLoss += loss;
+	float floatLoss = (float)loss;
+	logProbabilityFile->blockwrite((U8 *)&floatLoss, sizeof(float));
+	//printf("\nTotal loss: %f", totalLoss);
+	//logProbabilityFile->putchar((pr >> 8) & 255);
+	//logProbabilityFile->putchar(pr & 255);
+}
+#endif
 
 Predictor::Predictor() :
   pr(2048), 
@@ -10019,6 +10080,11 @@ void Predictor::update() {
   bpos=(bpos+1)&7;
 
   int pr0=contextModel.Predict(&stats);
+
+#ifdef LOG_PREDICTION_LOSS
+  int imageWidth = contextModel.blockinfo;
+#endif
+
   if (contextModel.Bypass) {
     pr=pr0;
     return;
@@ -10061,6 +10127,11 @@ void Predictor::update() {
       break;
     }
     case IMAGE8GRAY: {
+
+#ifdef LOG_PREDICTION_LOSS
+		logProbability(pr, y, imageWidth);
+#endif
+
       int limit=0x3FF>>((blpos<0xFFF)*4);
       pr  = Image.Gray.APMs[0].p(pr0, (c0<<4)|(stats.Misses&0xF), limit);
       pr1 = Image.Gray.APMs[1].p(pr, (c0<<8)|stats.Image.ctx, limit);
@@ -10071,6 +10142,11 @@ void Predictor::update() {
       break;
     }
     case IMAGE8: {
+
+#ifdef LOG_PREDICTION_LOSS
+		logProbability(pr, y, imageWidth);
+#endif
+
       int limit=0x3FF>>((blpos<0xFFF)*4);
       pr  = Image.Palette.APMs[0].p(pr0, (c0<<4)|(stats.Misses&0xF), limit);
       pr1 = Image.Palette.APMs[1].p(pr0, hash(c0, stats.Image.pixels.W, stats.Image.pixels.N)&0xFFFF, limit);
