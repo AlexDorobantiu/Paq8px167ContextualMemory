@@ -12,14 +12,15 @@
 #define PROGYEAR     "2018"
 
 #define USE_CONTEXTUAL_MEMORY
-#define LOG_PREDICTION_LOSS
+//#define LOG_PREDICTION_LOSS
 
+#if defined LOG_PREDICTION_LOSS
 #if defined(USE_CONTEXTUAL_MEMORY)
 #define LOG_PREDICTION_FILENAME  "outputLossCM.log"
 #else
 #define LOG_PREDICTION_FILENAME  "outputLoss.log"
 #endif
-
+#endif
 
 //////////////////////// Build options /////////////////////////////////////
 
@@ -6686,7 +6687,7 @@ public:
 		contextualMemory->computeOutputProbability();
 		feedbackProbability = contextualMemory->getOutputProbability();
 		outputProbability = feedbackProbability;
-		int quantizedProbability = outputProbability * 4094 + 1 + 0.5;
+		int quantizedProbability = outputProbability * 4094 + 1 + 0.5f;
 		int returnValue = stretch(quantizedProbability);
 		return returnValue;
 	}
