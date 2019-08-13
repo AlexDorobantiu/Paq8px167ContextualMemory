@@ -87,6 +87,7 @@
 // Platform-independent includes
 #include <sys/stat.h> //stat(), mkdir()
 #include <math.h>     //floor(), sqrt()
+#include <cmath>      //std::sin(), std::cos()
 #include <stdexcept>  //std::exception
 #include <algorithm>
 
@@ -2965,7 +2966,7 @@ public:
   English affix stemmer, based on the Porter2 stemmer.
 
   Changelog:
-  (29/12/2017) v127: Initial release by Márcio Pais
+  (29/12/2017) v127: Initial release by MÃ¡rcio Pais
   (02/01/2018) v128: Small changes to allow for compilation with MSVC
   Fix buffer overflow (thank you Jan Ondrus)
   (28/01/2018) v133: Refactoring, added processing of "non/non-" prefixes
@@ -3267,7 +3268,7 @@ private:
     return (W->Type&English::AdjectiveSuperlative)>0;
   }
   //Search for the longest among the suffixes, 's' or 's or ' and remove if found.
-  //Exaples: Children’s toys / Vice presidents' duties
+  //Exaples: ChildrenÂ’s toys / Vice presidents' duties
   bool Step0(Word *W) {
     for (int i=0; i<NUM_SUFFIXES_STEP0; i++) {
       if (W->EndsWith(SuffixesStep0[i])) {
@@ -3665,7 +3666,7 @@ public:
   French suffix stemmer, based on the Porter stemmer.
 
   Changelog:
-  (28/01/2018) v133: Initial release by Márcio Pais
+  (28/01/2018) v133: Initial release by MÃ¡rcio Pais
   (04/02/2018) v135: Added processing of common words
   (25/02/2018) v139: Added UTF8 conversion
 */
@@ -4057,7 +4058,7 @@ public:
   German suffix stemmer, based on the Porter stemmer.
 
   Changelog:
-  (27/02/2018) v140: Initial release by Márcio Pais
+  (27/02/2018) v140: Initial release by MÃ¡rcio Pais
 */
 
 class GermanStemmer : public Stemmer {
@@ -4257,7 +4258,7 @@ public:
   Text model
 
   Changelog:
-  (04/02/2018) v135: Initial release by Márcio Pais
+  (04/02/2018) v135: Initial release by MÃ¡rcio Pais
   (11/02/2018) v136: Uses 16 contexts, sets 3 mixer contexts
   (15/02/2018) v138: Uses 21 contexts, sets 4 mixer contexts
   (25/02/2018) v139: Uses 26 contexts
@@ -7093,7 +7094,7 @@ void im8bitModel(Mixer& m, int w, ModelStats *Stats = nullptr, int gray = 0, int
   Model for 4-bit image data
 
   Changelog:
-  (31/08/2017) v103: Initial release by Márcio Pais
+  (31/08/2017) v103: Initial release by MÃ¡rcio Pais
 */
 void im4bitModel(Mixer& m, int w) {
   static HashTable<16> t(MEM/2);
@@ -8154,7 +8155,7 @@ void wavModel(Mixer& m, int info, ModelStats *Stats = nullptr) {
   are relevant to parsing (prefixes, opcode, Mod and R/M fields of the ModRM byte, Scale field of the SIB byte)
 
   Changelog:
-  (18/08/2017) v98: Initial release by Márcio Pais
+  (18/08/2017) v98: Initial release by MÃ¡rcio Pais
   (19/08/2017) v99: Bug fixes, tables for instruction categorization, other small improvements
   (29/08/2017) v102: Added variable context dependent on parsing break point
   (17/09/2017) v112: Allow pre-training of the model
@@ -9466,7 +9467,7 @@ void nestModel(Mixer& m)
   Attempts to parse the tag structure and detect specific content types.
 
   Changelog:
-  (17/08/2017) v96: Initial release by Márcio Pais
+  (17/08/2017) v96: Initial release by MÃ¡rcio Pais
   (17/08/2017) v97: Bug fixes (thank you Mauro Vezzosi) and improvements.
 */
 
